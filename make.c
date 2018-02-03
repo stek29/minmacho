@@ -63,6 +63,10 @@ typedef _STRUCT_ARM_THREAD_STATE64		arm_thread_state64_t;
 #warning dyld needs "linking" to libdyld.dylib
 #endif
 
+#if defined(DYLD) && !(defined(DYLDINFO) && defined(SYMTAB) && defined(DYSYMTAB))
+#warning DYLD needs at least empty DYLDINFO, SYMTAB and DYSYMTAB
+#endif
+
 #if !defined(MAKE_X86_64) && !defined(MAKE_X86_32) && !defined(MAKE_ARM64)
 #error Specify MAKE_X86_64 or MAKE_X86_32 or MAKE_ARM64
 #endif
@@ -74,24 +78,7 @@ typedef _STRUCT_ARM_THREAD_STATE64		arm_thread_state64_t;
 #endif
 
 #ifdef NOPAD
-#warning No padding results in what kernel considers malformed mach-o
-#if 0
-// xnu-4570.1.46/bsd/kern/mach_loader.c:
-1600  	/*
-1601  	 * Make sure the segment is page-aligned in the file.
-1602  	 */
-....
-1616  	if ((file_offset & PAGE_MASK_64) != 0 ||
-1617  		/* we can't mmap() it if it's not page-aligned in the file */
-1618  	    (file_offset & vm_map_page_mask(map)) != 0) {
-1619  		/*
-1620  		 * The 1st test would have failed if the system's page size
-1621  		 * was what this process believe is the page size, so let's
-1622  		 * fail here too for the sake of consistency.
-1623  		 */
-1624  		return (LOAD_BADMACHO);
-1625  	}
-#endif
+#warning No padding results in what kernel considers malformed mach-o. (thanks, TaiG? :)
 #endif
 
 #if !defined(PAGEZERO) && !defined(MAKE_X86_32)
@@ -266,7 +253,7 @@ int main(void) {
 	}
 #endif
 
-#ifdef DYLD
+#ifdef SYMTAB
 	struct symtab_command symtab;
 	{
 		// fix symoff
@@ -278,7 +265,9 @@ int main(void) {
 		++header.ncmds;
 		header.sizeofcmds += symtab.cmdsize;
 	}
+#endif
 
+#ifdef DYSYMTAB
 	struct dysymtab_command dysymtab;
 	{
 		bzero(&dysymtab, sizeof(dysymtab));
@@ -288,8 +277,13 @@ int main(void) {
 		++header.ncmds;
 		header.sizeofcmds += dysymtab.cmdsize;
 	}
+#endif
 
-	size_t dyld_size = roundx(sizeof(struct dylinker_command) + strlen(DYLINKER), 8);
+#ifdef DYLD
+	size_t dyld_size = sizeof(struct dylinker_command) + strlen(DYLINKER);
+#ifndef NO_CMDSIZE_ROUND
+	dyld_size = roundx(dyld_size, 8);
+#endif
 	struct dylinker_command *dyld_cmd = __builtin_alloca(dyld_size);
 	{
 		bzero(dyld_cmd, dyld_size);
@@ -301,7 +295,9 @@ int main(void) {
 		++header.ncmds;
 		header.sizeofcmds += dyld_cmd->cmdsize;
 	}
+#endif
 
+#ifdef DYLDINFO
 	// dyld fails if at least emty LC_DYLD_INFO_ONLY command isn't present
 	struct dyld_info_command dyldinfo_cmd;
 	{
@@ -315,7 +311,10 @@ int main(void) {
 #endif
 
 #ifdef DYLIB
-	size_t dylib_size = roundx(sizeof(struct dylib_command) + strlen(LSYSTEM), 8);
+	size_t dylib_size = sizeof(struct dylib_command) + strlen(LSYSTEM);
+#ifndef NO_CMDSIZE_ROUND
+	dylib_size = roundx(dylib_size, 8);
+#endif
 	struct dylib_command *dylib_cmd = __builtin_alloca(dylib_size);
 	{
 		bzero(dylib_cmd, dylib_size);
@@ -464,7 +463,7 @@ int main(void) {
 	write(aoutfd, &linkedit_seg, sizeof(linkedit_seg));
 #endif
 
-#ifdef DYLD
+#ifdef SYMTAB
 	// symtab
 #if defined(LINKEDIT) || defined(FAKELINKEDIT)
 	symtab.symoff = linkedit_seg.fileoff;
@@ -473,12 +472,19 @@ int main(void) {
 #endif
 	symtab.stroff = symtab.symoff;
 	write(aoutfd, &symtab, symtab.cmdsize);
+#endif
 
+#ifdef DYSYMTAB
 	// dysymtab
 	write(aoutfd, &dysymtab, dysymtab.cmdsize);
+#endif
 
+#ifdef DYLD
 	// dyld
 	write(aoutfd, dyld_cmd, dyld_size);
+#endif
+
+#ifdef DYLDINFO
 	// dyldinfo
 	write(aoutfd, &dyldinfo_cmd, dyldinfo_cmd.cmdsize);
 #endif
